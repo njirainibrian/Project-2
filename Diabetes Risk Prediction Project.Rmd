@@ -1,0 +1,135 @@
+---
+title: "Predictive Modelling of Diabetes Risk Using Patient Health Data"
+author: "Njiraini Brian (JKUAT)"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+#Install packages
+install.packages("tidyverse")
+install.packages("caret")
+install.packages("randomForest")
+install.packages("pROC")
+install.packages("ggplot2")
+install.packages("ggcorrplot")
+install.packages("DMwR")
+install.packages("xgboost")
+
+#Load libraries
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(pROC)
+library(ggplot2)
+library(ggcorrplot)
+library(DMwR)
+library(xgboost)
+
+#Load data
+library(readr)
+data <- read_csv("Code Training/diabetes.csv")
+
+#Check structure
+str(data)
+
+#Replace zeros with NA for key clinical features
+data[, c("Glucose", "BloodPressure", "SkinThickness","Insulin", "BMI")] <- sapply(data[, c("Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI")], function(x) ifelse(x== 0, NA, x))
+
+#Input missing values using median
+data <- data %>% 
+  mutate( 
+  Glucose = replace_na(Glucose, median(Glucose, na.rm = TRUE)),
+  BloodPressure = replace_na(BloodPressure, median(SkinThickness, na.rm = TRUE)),
+  SkinThickness = replace_na(SkinThickness, median(SkinThickness, na.rm = TRUE)),
+  Insulin = replace_na(Insulin, median(Insulin, na.rm = TRUE)),
+  BMI = replace_na(BMI, median(BMI, na.rm = TRUE)))
+  
+#Convert outcome to factor
+data$Outcome <- as.factor(data$Outcome)
+
+#Plot glucose distribution by outcome
+ggplot(data, aes(x = Glucose, fill = Outcome)) +
+geom_density(alpha = 0.6) +
+labs(title = "Glucose Levels by Diabetes Diagnosis", x = "Glucose", y = "Density")
+
+#Boxplot of BMI ny Outcome
+ggplot(data, aes(x = Outcome, y = BMI, fill = Outcome)) +
+geom_boxplot() +
+labs(title = "BMI Distribution by Diabetes Diagnosis")
+
+#Correlation matrix
+ggcorrplot(cor(data %>% select(-Outcome)), 
+lab = TRUE,
+title = "Correlation Between Clinical Features", colors = c("red", "white", "green"))
+
+#Create a new feature: "Metabolic Syndrome Score"
+data <- data%>% 
+mutate(
+MetabolicScore = (Glucose / 100) + (BMI /30) + (BloodPressure / 100)
+)
+
+#Normalize features
+preproc <- preProcess(data %>% select(-Outcome), method = c("center", "scale"))
+data_normalized <- predict(preproc, data)
+
+#Split data into training and testing sets
+set.seed(123)
+split <- createDataPartition(data$Outcome, p = 0.8, list = FALSE)
+train_data <- data[split,]
+test_data<- data[-split,]
+
+#Logistic Regression (Baseline predictive model)
+logit_model <- glm(Outcome ~ ., data = train_data, family = "binomial")
+summary(logit_model)
+
+#Predict on test data
+logit_pred <- predict(logit_model, test_data, type = "response")
+logit_pred_class <- ifelse(logit_pred > 0.5, 1,0)
+
+#Evaluate performance
+confusionMatrix(factor(logit_pred_class), test_data$Outcome)
+
+#Random Forest (Advanced model)
+rf_model <- randomForest(Outcome ~., data = train_data, ntree = 100, importance = TRUE)
+rf_pred <- predict(rf_model, test_data)
+
+#Evaluate performance
+confusionMatrix(rf_pred, test_data$Outcome)
+
+#Feature importance
+importance <- importance(rf_model)
+varImpPlot(rf_model, main = "Feature Importance for Diabetes Prediction")
+
+# Convert data to matrix format for XGBoost
+train_matrix <- xgb.DMatrix(data = as.matrix(train_data %>% select(-Outcome)), 
+                            label = as.numeric(train_data$Outcome) - 1)
+test_matrix <- xgb.DMatrix(data = as.matrix(test_data %>% select(-Outcome)), 
+                           label = as.numeric(test_data$Outcome) - 1)
+
+# Train model
+xgb_model <- xgboost(
+  data = train_matrix,
+  nrounds = 100,
+  objective = "binary:logistic",
+  eval_metric = "logloss"
+)
+
+# Predict
+xgb_pred <- predict(xgb_model, test_matrix)
+xgb_pred_class <- ifelse(xgb_pred > 0.5, 1, 0)
+
+# Evaluate
+confusionMatrix(factor(xgb_pred_class), test_data$Outcome)
+
+# ROC curve for Random Forest
+rf_prob <- predict(rf_model, test_data, type = "prob")[, 2]
+roc_curve <- roc(test_data$Outcome, rf_prob)
+plot(roc_curve, col = "blue", main = "ROC Curve (Random Forest)")
+auc(roc_curve)  # Aim for AUC > 0.8
+
+# SHAP values (for XGBoost, optional)
+install.packages("SHAPforxgboost")
+library(SHAPforxgboost)
+shap_values <- shap.values(xgb_model, X_train = as.matrix(train_data %>% select(-Outcome)))
+shap.plot.summary(shap_values)
